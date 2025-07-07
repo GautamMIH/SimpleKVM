@@ -1,0 +1,19 @@
+# Python bytecode files
+*.py[cod]
+*.spec
+# Compiled Python files
+*.pyo
+# Python cache directories
+__pycache__/
+# Distribution / packaging
+*.egg
+*.egg-info/
+dist/
+build/
+# Virtual environment directories
+venv/
+env/
+virtual/
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints
+
