@@ -1,18 +1,17 @@
-# unified_kvm_v10_recenter_suppress.py
+# unified_kvm_v12_readonly_hotkey.py
 # A single application that can act as a KVM Server or Client.
 #
-# Changelog from v9:
-# - MODIFIED: Re-implemented the "re-centering" mouse suppression logic as requested.
-#   When remote control is active, the server now locks its cursor to a fixed
-#   point and calculates all movement deltas from that spot, preventing any
-#   cursor drift on the server screen.
+# Changelog from v11:
+# - MODIFIED: The hotkey entry field on the Server page is now read-only to
+#   prevent manual editing. The hotkey can only be set using the "Record" button.
+# - IMPROVED: UI logic is updated to handle the new read-only state of the entry field.
 #
 # Features:
-# - Redesigned modern UI with a dark theme and a responsive, centered layout.
-# - Server discovery on the local network using UDP broadcasts.
-# - Customizable hotkey on the server to toggle control.
-# - Robust key serialization (using VK codes) to fix simulation errors.
-# - Hardened shutdown sequence to prevent zombie listeners and ensure clean state changes.
+# - Redesigned modern UI with a dark theme.
+# - Server discovery on the local network.
+# - User-friendly hotkey recording (read-only field).
+# - Re-centering mouse suppression to prevent cursor drift on the server.
+# - Robust key serialization and a hardened shutdown sequence.
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -501,6 +500,10 @@ class ServerPage(BasePage):
         super().__init__(parent, controller)
         self.page_title = "Server"
 
+        # State variables for hotkey capture
+        self.is_capturing_hotkey = False
+        self.pressed_keys = set()
+
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
 
@@ -516,10 +519,21 @@ class ServerPage(BasePage):
         config_frame = ttk.LabelFrame(content_frame, text="Configuration", padding=15)
         config_frame.grid(row=0, column=0, sticky='ew', padx=10)
         config_frame.columnconfigure(1, weight=1)
+        
         ttk.Label(config_frame, text="Toggle Hotkey:").grid(row=0, column=0, padx=(0,10), pady=5, sticky="w")
-        self.hotkey_entry = ttk.Entry(config_frame)
+        
+        hotkey_inner_frame = ttk.Frame(config_frame)
+        hotkey_inner_frame.grid(row=0, column=1, pady=5, sticky="ew")
+        hotkey_inner_frame.columnconfigure(0, weight=1)
+
+        # --- MODIFIED: Hotkey entry is now readonly ---
+        self.hotkey_entry = ttk.Entry(hotkey_inner_frame)
         self.hotkey_entry.insert(0, "<ctrl>+<alt>+z")
-        self.hotkey_entry.grid(row=0, column=1, pady=5, sticky="ew")
+        self.hotkey_entry.config(state="readonly")
+        self.hotkey_entry.grid(row=0, column=0, sticky="ew")
+        
+        self.record_btn = ttk.Button(hotkey_inner_frame, text="Record", command=self.start_hotkey_capture)
+        self.record_btn.grid(row=0, column=1, padx=(5,0))
 
         control_frame = ttk.Frame(content_frame)
         control_frame.grid(row=1, column=0, pady=20)
@@ -536,21 +550,117 @@ class ServerPage(BasePage):
         self.log_text.tag_config("error", foreground="#ff8a8a")
         self.log_text.pack(fill="both", expand=True)
 
-    def log_message(self, message, is_error=False): self.log(self.log_text, message, is_error)
+    def start_hotkey_capture(self):
+        self.is_capturing_hotkey = True
+        self.pressed_keys.clear()
+        
+        # Temporarily enable to change text, then set back to readonly
+        self.hotkey_entry.config(state="normal")
+        self.hotkey_entry.delete(0, tk.END)
+        self.hotkey_entry.insert(0, "Press a key combination...")
+        self.hotkey_entry.config(state="readonly")
+        self.hotkey_entry.focus()
+
+        self.hotkey_entry.bind("<KeyPress>", self.on_hotkey_press)
+        self.hotkey_entry.bind("<KeyRelease>", self.on_hotkey_release)
+        self.hotkey_entry.bind("<FocusOut>", self.stop_hotkey_capture)
+
+    def stop_hotkey_capture(self, event=None):
+        if not self.is_capturing_hotkey:
+            return
+            
+        self.is_capturing_hotkey = False
+        
+        self.hotkey_entry.unbind("<KeyPress>")
+        self.hotkey_entry.unbind("<KeyRelease>")
+        self.hotkey_entry.unbind("<FocusOut>")
+
+        # If nothing was captured, restore default text
+        if not self.pressed_keys:
+            self.hotkey_entry.config(state="normal")
+            self.hotkey_entry.delete(0, tk.END)
+            self.hotkey_entry.insert(0, "<ctrl>+<alt>+z")
+            self.hotkey_entry.config(state="readonly")
+
+    def on_hotkey_press(self, event):
+        if not self.is_capturing_hotkey:
+            return
+
+        key_name = self.format_key(event)
+        if key_name and key_name not in self.pressed_keys:
+            self.pressed_keys.add(key_name)
+            self.update_hotkey_entry()
+        
+        return "break" 
+
+    def on_hotkey_release(self, event):
+        if not self.is_capturing_hotkey:
+            return
+        
+        key_sym = event.keysym.lower()
+        if not ('control' in key_sym or 'alt' in key_sym or 'shift' in key_sym or 'super' in key_sym):
+            self.stop_hotkey_capture()
+
+        return "break"
+
+    def format_key(self, event):
+        key_sym = event.keysym
+        
+        if 'control' in key_sym.lower(): return "<ctrl>"
+        if 'alt' in key_sym.lower(): return "<alt>"
+        if 'shift' in key_sym.lower(): return "<shift>"
+        if 'super' in key_sym.lower(): return "<cmd>"
+
+        if key_sym.startswith('F') and key_sym[1:].isdigit():
+            return f"<{key_sym.lower()}>"
+            
+        if len(key_sym) == 1:
+            return key_sym.lower()
+        
+        return None
+
+    def update_hotkey_entry(self):
+        order = ['<cmd>', '<ctrl>', '<alt>', '<shift>']
+        modifiers = [m for m in order if m in self.pressed_keys]
+        main_key = [k for k in self.pressed_keys if k not in order]
+        hotkey_parts = modifiers + main_key
+        
+        if hotkey_parts:
+            self.hotkey_entry.config(state="normal")
+            self.hotkey_entry.delete(0, tk.END)
+            self.hotkey_entry.insert(0, "+".join(hotkey_parts))
+            self.hotkey_entry.config(state="readonly")
+
+    def log_message(self, message, is_error=False): 
+        self.log(self.log_text, message, is_error)
+
     def start_server(self):
+        if self.is_capturing_hotkey:
+            self.stop_hotkey_capture()
+        
         hotkey = self.hotkey_entry.get()
-        if not hotkey: messagebox.showerror("Error", "Hotkey cannot be empty."); return
+        if not hotkey or "Press a key" in hotkey: 
+            messagebox.showerror("Error", "Please set a valid hotkey first."); return
         try:
+            keyboard.HotKey.parse(hotkey)
+
             self.controller.kvm_instance = KVMServer(hotkey, self.log_message)
             self.controller.kvm_instance.start()
-            self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal"); self.hotkey_entry.config(state="disabled")
-        except ValueError:
-            messagebox.showerror("Error", f"Invalid hotkey string: '{hotkey}'.\nPlease use a valid format, e.g., <ctrl>+<alt>+z")
+            self.start_btn.config(state="disabled"); self.stop_btn.config(state="normal")
+            self.hotkey_entry.config(state="disabled"); self.record_btn.config(state="disabled")
+        except Exception:
+            messagebox.showerror("Error", f"Invalid hotkey string: '{hotkey}'.\nPlease record a valid combination, e.g., <ctrl>+<alt>+z")
 
     def stop_server(self):
         if self.controller.kvm_instance: self.controller.kvm_instance.stop(); self.controller.kvm_instance = None
-        self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled"); self.hotkey_entry.config(state="normal")
+        self.start_btn.config(state="normal"); self.stop_btn.config(state="disabled")
+        # --- MODIFIED: Set entry state to readonly, not normal ---
+        self.hotkey_entry.config(state="readonly"); self.record_btn.config(state="normal")
+        
     def go_back(self):
+        if self.is_capturing_hotkey:
+            self.stop_hotkey_capture()
+        self.stop_server()
         self.controller.show_frame("StartPage")
 
 class ClientPage(BasePage):
