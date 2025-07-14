@@ -4,13 +4,14 @@
 // application using the native Windows API (WinAPI).
 //
 // How to compile on Windows with MinGW-w64 (g++):
-// g++ -std=c++17 kvm_gui.cpp -o kvm_gui.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s -mwindows
+// g++ -std=c++17 kvm_gui.cpp -o kvm_gui.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s -mwindows -lshell32
 //
 // Required libraries to link:
-// -lws2_32 : Windows Sockets API for networking.
-// -luser32 : Windows User API for GUI and input hooks.
+// -lws2_32  : Windows Sockets API for networking.
+// -luser32  : Windows User API for GUI and input hooks.
 // -lgdi32   : Graphics Device Interface for fonts and drawing.
 // -lcomctl32: Common Controls library for modern UI elements.
+// -lshell32 : For SHGetFolderPathW to find AppData.
 
 #define WIN32_LEAN_AND_MEAN
 
@@ -20,15 +21,30 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <fstream>      // For file I/O
+#include <filesystem>   // For creating directories
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
-#include <commctrl.h> // For modern controls like list views
+#include <commctrl.h>   // For modern controls like list views
+#include <shlobj.h>     // For SHGetFolderPathW
+#include "json.hpp"     // For JSON handling
+
+// For convenience
+using json = nlohmann::json;
 
 // --- Configuration & Control IDs ---
 const int KVM_PORT = 65432;
 const int DISCOVERY_PORT = 65433;
 const std::string DISCOVERY_MESSAGE = "KVM_SERVER_DISCOVERY_PING_CPP";
+const std::string CONFIG_FILE_NAME = "kvm_config.json";
+
+// --- Color Palette ---
+const COLORREF g_clrBackground = RGB(32, 32, 32);
+const COLORREF g_clrControlBG = RGB(45, 45, 45);
+const COLORREF g_clrAccentBlue = RGB(0, 120, 215);
+const COLORREF g_clrText = RGB(240, 240, 240);
+const COLORREF g_clrDisabledText = RGB(128, 128, 128);
 
 // Custom Window Messages
 #define WM_APP_CLIENT_DISCONNECTED (WM_APP + 1)
@@ -91,6 +107,8 @@ std::atomic<bool> g_is_waiting_for_hotkey(false);
 HWND g_hStartServerBtn, g_hStartClientBtn;
 HWND g_hBackBtn, g_hServerStartBtn, g_hServerStopBtn, g_hServerLog, g_hChangeHotkeyBtn, g_hHotkeyDisplay, g_hHotkeyLabel;
 HWND g_hClientScanBtn, g_hClientConnectBtn, g_hClientDisconnectBtn, g_hClientServerList, g_hClientLog;
+HBRUSH g_hbrBackground = NULL;
+HBRUSH g_hbrControlBG = NULL;
 
 // --- Function Prototypes ---
 void run_server_logic();
@@ -101,6 +119,8 @@ void stop_kvm_logic();
 void InstallHooks();
 void UninstallHooks();
 std::string GetHotkeyString();
+void SaveConfiguration();
+void LoadConfiguration();
 
 void handle_client_connection(SOCKET client_socket);
 LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam);
@@ -123,10 +143,14 @@ void CreateMainGUIControls(HWND hWnd);
 void ShowStartPage();
 void ShowServerPage();
 void ShowClientPage();
+void DrawCustomButton(LPDRAWITEMSTRUCT lpDrawItem);
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     g_main_thread_id = GetCurrentThreadId();
+
+    // Load settings from config file before doing anything else
+    LoadConfiguration();
 
     // Initialize Winsock
     WSADATA wsaData;
@@ -135,19 +159,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
+    // Create brushes for the dark theme
+    g_hbrBackground = CreateSolidBrush(g_clrBackground);
+    g_hbrControlBG = CreateSolidBrush(g_clrControlBG);
+
     const char CLASS_NAME[] = "KVMWindowClass";
 
     WNDCLASS wc = {};
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = CLASS_NAME;
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hbrBackground = g_hbrBackground;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
 
     RegisterClass(&wc);
 
     g_hwnd = CreateWindowEx(
-        0, CLASS_NAME, "C++ Software KVM",
+        0, CLASS_NAME, "Simple KVM",
         WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 520, 500,
         NULL, NULL, hInstance, NULL);
 
@@ -169,6 +197,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_is_running = false;
     stop_kvm_logic(); // Ensure all threads and sockets are cleaned up
     WSACleanup();
+    
+    // Clean up theme resources
+    DeleteObject(g_hbrBackground);
+    DeleteObject(g_hbrControlBG);
     return 0;
 }
 
@@ -194,19 +226,49 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
         }
 
+        case WM_DRAWITEM: {
+            LPDRAWITEMSTRUCT lpDrawItem = (LPDRAWITEMSTRUCT)lParam;
+            if (lpDrawItem->CtlType == ODT_BUTTON) {
+                DrawCustomButton(lpDrawItem);
+            }
+            return TRUE;
+        }
+        
+        case WM_CTLCOLORSTATIC: {
+            HDC hdcStatic = (HDC)wParam;
+            SetTextColor(hdcStatic, g_clrText);
+            SetBkColor(hdcStatic, g_clrBackground);
+            return (INT_PTR)g_hbrBackground;
+        }
+
+        case WM_CTLCOLOREDIT: {
+            HDC hdcEdit = (HDC)wParam;
+            SetTextColor(hdcEdit, g_clrText);
+            SetBkColor(hdcEdit, g_clrControlBG);
+            return (INT_PTR)g_hbrControlBG;
+        }
+        
+        case WM_CTLCOLORLISTBOX: {
+            HDC hdcListBox = (HDC)wParam;
+            SetTextColor(hdcListBox, g_clrText);
+            SetBkColor(hdcListBox, g_clrControlBG);
+            return (INT_PTR)g_hbrControlBG;
+        }
+
+
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
             switch (wmId) {
                 case IDC_START_SERVER_BTN:
                     ShowServerPage();
-                    InstallHooks(); // Install hooks when server page is shown
+                    InstallHooks();
                     break;
                 case IDC_START_CLIENT_BTN:
                     ShowClientPage();
                     break;
                 case IDC_BACK_BTN:
                     g_is_server_active = false;
-                    stop_kvm_logic(); // This stops network AND uninstalls hooks
+                    stop_kvm_logic();
                     ShowStartPage();
                     break;
                 case IDC_SERVER_START_BTN:
@@ -311,7 +373,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 EnableWindow(g_hServerStartBtn, TRUE);
                 EnableWindow(g_hServerStopBtn, FALSE);
             }
-            LogServerMessage("Hotkey has been updated.");
+            LogServerMessage("Hotkey has been updated. Saving configuration...");
+            SaveConfiguration();
             break;
         }
 
@@ -344,29 +407,29 @@ void CreateMainGUIControls(HWND hWnd) {
         DEFAULT_PITCH | FF_SWISS, "Segoe UI");
 
     // Start Page
-    g_hStartServerBtn = CreateWindow("BUTTON", "Act as Server", WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON,
+    g_hStartServerBtn = CreateWindow("BUTTON", "Act as Server", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_START_SERVER_BTN, NULL, NULL);
-    g_hStartClientBtn = CreateWindow("BUTTON", "Act as Client", WS_TABSTOP | WS_CHILD,
+    g_hStartClientBtn = CreateWindow("BUTTON", "Act as Client", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_START_CLIENT_BTN, NULL, NULL);
     SendMessage(g_hStartServerBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hStartClientBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Back Button (shared)
-    g_hBackBtn = CreateWindow("BUTTON", "<- Back", WS_TABSTOP | WS_CHILD,
+    g_hBackBtn = CreateWindow("BUTTON", "<- Back", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_BACK_BTN, NULL, NULL);
     SendMessage(g_hBackBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Server Page
-    g_hServerStartBtn = CreateWindow("BUTTON", "Start Server", WS_TABSTOP | WS_CHILD,
+    g_hServerStartBtn = CreateWindow("BUTTON", "Start Server", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_SERVER_START_BTN, NULL, NULL);
-    g_hServerStopBtn = CreateWindow("BUTTON", "Stop Server", WS_TABSTOP | WS_CHILD,
+    g_hServerStopBtn = CreateWindow("BUTTON", "Stop Server", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_SERVER_STOP_BTN, NULL, NULL);
     
     g_hHotkeyLabel = CreateWindow("STATIC", "Toggle Hotkey:", WS_CHILD | SS_RIGHT, 
         0, 0, 0, 0, hWnd, (HMENU)IDC_HOTKEY_LABEL, NULL, NULL);
     g_hHotkeyDisplay = CreateWindow("STATIC", "", WS_CHILD | SS_LEFT | WS_BORDER,
         0, 0, 0, 0, hWnd, (HMENU)IDC_HOTKEY_DISPLAY, NULL, NULL);
-    g_hChangeHotkeyBtn = CreateWindow("BUTTON", "Change", WS_TABSTOP | WS_CHILD,
+    g_hChangeHotkeyBtn = CreateWindow("BUTTON", "Change", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CHANGE_HOTKEY_BTN, NULL, NULL);
 
     g_hServerLog = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
@@ -382,13 +445,13 @@ void CreateMainGUIControls(HWND hWnd) {
     EnableWindow(g_hServerStopBtn, FALSE);
 
     // Client Page
-    g_hClientScanBtn = CreateWindow("BUTTON", "Scan for Servers", WS_TABSTOP | WS_CHILD,
+    g_hClientScanBtn = CreateWindow("BUTTON", "Scan for Servers", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_SCAN_BTN, NULL, NULL);
     g_hClientServerList = CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", "", WS_CHILD | LBS_NOTIFY | WS_VSCROLL | LBS_HASSTRINGS,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_SERVER_LIST, NULL, NULL);
-    g_hClientConnectBtn = CreateWindow("BUTTON", "Connect", WS_TABSTOP | WS_CHILD,
+    g_hClientConnectBtn = CreateWindow("BUTTON", "Connect", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_CONNECT_BTN, NULL, NULL);
-    g_hClientDisconnectBtn = CreateWindow("BUTTON", "Disconnect", WS_TABSTOP | WS_CHILD,
+    g_hClientDisconnectBtn = CreateWindow("BUTTON", "Disconnect", WS_TABSTOP | WS_CHILD | BS_OWNERDRAW,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_DISCONNECT_BTN, NULL, NULL);
     g_hClientLog = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
         0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_LOG, NULL, NULL);
@@ -399,6 +462,56 @@ void CreateMainGUIControls(HWND hWnd) {
     SendMessage(g_hClientLog, WM_SETFONT, (WPARAM)hFont, TRUE);
     EnableWindow(g_hClientDisconnectBtn, FALSE);
 }
+
+void DrawCustomButton(LPDRAWITEMSTRUCT lpDrawItem) {
+    HDC hdc = lpDrawItem->hDC;
+    RECT rc = lpDrawItem->rcItem;
+    UINT state = lpDrawItem->itemState;
+
+    char btnText[256];
+    GetWindowText(lpDrawItem->hwndItem, btnText, 256);
+
+    // Brushes and Pens
+    HBRUSH bgBrush;
+    HPEN borderPen;
+    COLORREF textColor;
+
+    if (state & ODS_DISABLED) {
+        bgBrush = CreateSolidBrush(g_clrControlBG);
+        borderPen = CreatePen(PS_SOLID, 1, g_clrDisabledText);
+        textColor = g_clrDisabledText;
+    } else if (state & ODS_SELECTED) {
+        bgBrush = CreateSolidBrush(g_clrAccentBlue);
+        borderPen = CreatePen(PS_SOLID, 1, g_clrAccentBlue);
+        textColor = g_clrText;
+    } else {
+        bgBrush = CreateSolidBrush(g_clrControlBG);
+        borderPen = CreatePen(PS_SOLID, 1, g_clrAccentBlue);
+        textColor = g_clrText;
+    }
+    
+    // Drawing
+    FillRect(hdc, &rc, bgBrush);
+    
+    HPEN oldPen = (HPEN)SelectObject(hdc, borderPen);
+    HBRUSH oldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(hdc, oldPen);
+    SelectObject(hdc, oldBrush);
+
+    if (state & ODS_FOCUS) {
+        rc.left += 2; rc.top += 2; rc.right -= 2; rc.bottom -= 2;
+        DrawFocusRect(hdc, &rc);
+    }
+
+    SetTextColor(hdc, textColor);
+    SetBkMode(hdc, TRANSPARENT);
+    DrawText(hdc, btnText, -1, &lpDrawItem->rcItem, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    DeleteObject(bgBrush);
+    DeleteObject(borderPen);
+}
+
 
 void ShowStartPage() {
     g_currentPage = Page::START;
@@ -489,6 +602,68 @@ void ResizeControls(int width, int height) {
              MoveWindow(g_hClientLog, MARGIN, logY, width - MARGIN * 2, logHeight, TRUE);
             break;
         }
+    }
+}
+
+
+// =================================================================================
+// Configuration
+// =================================================================================
+
+std::filesystem::path GetConfigPath() {
+    WCHAR path[MAX_PATH];
+    if (SUCCEEDED(SHGetFolderPathW(NULL, CSIDL_APPDATA, NULL, 0, path))) {
+        std::filesystem::path appDataPath(path);
+        std::filesystem::path configDir = appDataPath / "KVM_GUI";
+        std::filesystem::create_directories(configDir); // Ensure the directory exists
+        return configDir / CONFIG_FILE_NAME;
+    }
+    // Fallback to local directory if AppData can't be found
+    return std::filesystem::current_path() / CONFIG_FILE_NAME;
+}
+
+void SaveConfiguration() {
+    json config;
+    config["hotkey"] = {
+        {"vk_code", g_hotkey_vk.load()},
+        {"ctrl", g_hotkey_ctrl.load()},
+        {"alt", g_hotkey_alt.load()},
+        {"shift", g_hotkey_shift.load()}
+    };
+
+    try {
+        std::ofstream file(GetConfigPath());
+        if (file.is_open()) {
+            file << config.dump(4); // Save with an indent of 4 for readability
+            LogServerMessage("Configuration saved.");
+        }
+    } catch (const std::exception& e) {
+        LogServerMessage("Error saving configuration: " + std::string(e.what()));
+    }
+}
+
+void LoadConfiguration() {
+    try {
+        std::filesystem::path configPath = GetConfigPath();
+        if (std::filesystem::exists(configPath)) {
+            std::ifstream file(configPath);
+            if (file.is_open()) {
+                json config = json::parse(file);
+
+                if (config.contains("hotkey")) {
+                    json hotkey = config["hotkey"];
+                    g_hotkey_vk = hotkey.value("vk_code", 'Z');
+                    g_hotkey_ctrl = hotkey.value("ctrl", true);
+                    g_hotkey_alt = hotkey.value("alt", true);
+                    g_hotkey_shift = hotkey.value("shift", false);
+                }
+            }
+        }
+    } catch (const json::parse_error& e) {
+        // Log or handle the error, e.g., by using default settings
+        // For this app, we'll just fall back to defaults silently.
+    } catch (const std::exception& e) {
+        // Handle other potential exceptions
     }
 }
 
@@ -736,7 +911,6 @@ LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam
 
         // --- Hotkey Capture Logic ---
         if (g_is_waiting_for_hotkey && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-            // Don't capture a modifier-only key press (e.g., pressing just "Ctrl")
             if (pkb->vkCode != VK_LCONTROL && pkb->vkCode != VK_RCONTROL &&
                 pkb->vkCode != VK_LSHIFT   && pkb->vkCode != VK_RSHIFT &&
                 pkb->vkCode != VK_LMENU    && pkb->vkCode != VK_RMENU &&
@@ -749,17 +923,16 @@ LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam
 
                 g_is_waiting_for_hotkey = false;
 
-                // Post message to update GUI from main thread
                 std::string hotkey_str = GetHotkeyString();
                 char* msg_copy = new char[hotkey_str.length() + 1];
                 strcpy_s(msg_copy, hotkey_str.length() + 1, hotkey_str.c_str());
                 PostMessage(g_hwnd, WM_APP_UPDATE_HOTKEY_DISPLAY, (WPARAM)msg_copy, 0);
 
-                return 1; // Consume the keypress to prevent it from passing to other apps
+                return 1;
             }
         }
 
-        // --- Hotkey Detection Logic --- (Only if server is active)
+        // --- Hotkey Detection Logic ---
         if (g_is_server_active && !g_is_waiting_for_hotkey && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
             bool ctrl_is_down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
             bool alt_is_down = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
@@ -772,7 +945,7 @@ LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam
             {
                 LogServerMessage("Hotkey detected! Toggling control...");
                 toggle_control();
-                return 1; // Consume the hotkey
+                return 1;
             }
         }
 
@@ -825,8 +998,6 @@ void send_data(const std::string& data) {
         if (!log_data.empty() && log_data.back() == '\n') {
             log_data.pop_back();
         }
-        // Optional: Can be too verbose. Comment out if not needed.
-        // LogServerMessage("Sending -> " + log_data);
 
         int bytes_sent = send(g_client_socket, data.c_str(), (int)data.length(), 0);
         if (bytes_sent == SOCKET_ERROR) {
@@ -879,16 +1050,13 @@ void release_all_client_modifiers() {
     for (int i = 0; i < 8; ++i) {
         inputs[i].type = INPUT_KEYBOARD;
         inputs[i].ki.wVk = keys[i];
-        inputs[i].ki.dwFlags = KEYEVENTF_KEYUP; // Only send key-up events
+        inputs[i].ki.dwFlags = KEYEVENTF_KEYUP;
     }
     SendInput(8, inputs, sizeof(INPUT));
 }
 
 
 void process_message(const std::string& message) {
-    // Optional: Can be too verbose. Comment out if not needed.
-    // LogClientMessage("Received <- " + message);
-
     size_t pos = message.find("event:");
     if (pos != std::string::npos) {
         std::string event_str = message.substr(pos + 6);
