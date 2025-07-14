@@ -1,5 +1,5 @@
 // How to compile on Windows with MinGW-w64 (g++):
-// g++ -std=c++17 kvm_gui.cpp -o kvm_gui.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s -mwindows -lshell32
+// g++ -std=c++17 kvm_gui.cpp resources.o -o Simple_KVM.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s -mwindows
 //
 // Required libraries to link:
 // -lws2_32  : Windows Sockets API for networking.
