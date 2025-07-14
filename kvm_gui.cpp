@@ -1,8 +1,3 @@
-// kvm_gui.cpp
-// A GUI-based KVM application for Windows, written in C++.
-// This version mimics the layout and functionality of the original Python
-// application using the native Windows API (WinAPI).
-//
 // How to compile on Windows with MinGW-w64 (g++):
 // g++ -std=c++17 kvm_gui.cpp -o kvm_gui.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s -mwindows -lshell32
 //
