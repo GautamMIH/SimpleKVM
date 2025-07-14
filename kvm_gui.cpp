@@ -57,6 +57,9 @@ const std::string DISCOVERY_MESSAGE = "KVM_SERVER_DISCOVERY_PING_CPP";
 #define IDC_CLIENT_LOG 305
 
 // --- Global State ---
+enum class Page { START, SERVER, CLIENT };
+Page g_currentPage = Page::START;
+
 std::atomic<bool> g_is_running(true);
 std::atomic<bool> g_is_server_active(false);
 std::atomic<bool> g_is_controlling_remote(false);
@@ -110,6 +113,8 @@ void LogServerMessage(const std::string& msg);
 void LogClientMessage(const std::string& msg);
 void AddServerToList(const std::string& server_ip);
 
+void ResizeControls(int width, int height);
+
 // =================================================================================
 // GUI Creation and Management
 // =================================================================================
@@ -143,7 +148,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     g_hwnd = CreateWindowEx(
         0, CLASS_NAME, "C++ Software KVM",
-        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 500, 500,
+        WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 520, 500,
         NULL, NULL, hInstance, NULL);
 
     if (g_hwnd == NULL) {
@@ -174,6 +179,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SetWindowText(g_hHotkeyDisplay, GetHotkeyString().c_str());
             ShowStartPage();
             break;
+
+        case WM_SIZE: {
+            int width = LOWORD(lParam);
+            int height = HIWORD(lParam);
+            ResizeControls(width, height);
+            break;
+        }
 
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
@@ -325,33 +337,33 @@ void CreateMainGUIControls(HWND hWnd) {
         DEFAULT_PITCH | FF_SWISS, "Segoe UI");
 
     // Start Page
-    g_hStartServerBtn = CreateWindow("BUTTON", "Act as Server", WS_TABSTOP | WS_VISIBLE | WS_CHILD | BS_DEFPUSHBUTTON,
-        150, 150, 200, 40, hWnd, (HMENU)IDC_START_SERVER_BTN, NULL, NULL);
-    g_hStartClientBtn = CreateWindow("BUTTON", "Act as Client", WS_TABSTOP | WS_VISIBLE | WS_CHILD,
-        150, 200, 200, 40, hWnd, (HMENU)IDC_START_CLIENT_BTN, NULL, NULL);
+    g_hStartServerBtn = CreateWindow("BUTTON", "Act as Server", WS_TABSTOP | WS_CHILD | BS_DEFPUSHBUTTON,
+        0, 0, 0, 0, hWnd, (HMENU)IDC_START_SERVER_BTN, NULL, NULL);
+    g_hStartClientBtn = CreateWindow("BUTTON", "Act as Client", WS_TABSTOP | WS_CHILD,
+        0, 0, 0, 0, hWnd, (HMENU)IDC_START_CLIENT_BTN, NULL, NULL);
     SendMessage(g_hStartServerBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hStartClientBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Back Button (shared)
     g_hBackBtn = CreateWindow("BUTTON", "<- Back", WS_TABSTOP | WS_CHILD,
-        10, 10, 80, 25, hWnd, (HMENU)IDC_BACK_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_BACK_BTN, NULL, NULL);
     SendMessage(g_hBackBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
 
     // Server Page
     g_hServerStartBtn = CreateWindow("BUTTON", "Start Server", WS_TABSTOP | WS_CHILD,
-        100, 50, 140, 30, hWnd, (HMENU)IDC_SERVER_START_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_SERVER_START_BTN, NULL, NULL);
     g_hServerStopBtn = CreateWindow("BUTTON", "Stop Server", WS_TABSTOP | WS_CHILD,
-        250, 50, 140, 30, hWnd, (HMENU)IDC_SERVER_STOP_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_SERVER_STOP_BTN, NULL, NULL);
     
     g_hHotkeyLabel = CreateWindow("STATIC", "Toggle Hotkey:", WS_CHILD | SS_RIGHT, 
-        10, 95, 100, 25, hWnd, (HMENU)IDC_HOTKEY_LABEL, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_HOTKEY_LABEL, NULL, NULL);
     g_hHotkeyDisplay = CreateWindow("STATIC", "", WS_CHILD | SS_LEFT | WS_BORDER,
-        115, 95, 200, 23, hWnd, (HMENU)IDC_HOTKEY_DISPLAY, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_HOTKEY_DISPLAY, NULL, NULL);
     g_hChangeHotkeyBtn = CreateWindow("BUTTON", "Change", WS_TABSTOP | WS_CHILD,
-        325, 95, 80, 23, hWnd, (HMENU)IDC_CHANGE_HOTKEY_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_CHANGE_HOTKEY_BTN, NULL, NULL);
 
     g_hServerLog = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-        10, 130, 460, 310, hWnd, (HMENU)IDC_SERVER_LOG, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_SERVER_LOG, NULL, NULL);
 
     SendMessage(g_hServerStartBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hServerStopBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -364,15 +376,15 @@ void CreateMainGUIControls(HWND hWnd) {
 
     // Client Page
     g_hClientScanBtn = CreateWindow("BUTTON", "Scan for Servers", WS_TABSTOP | WS_CHILD,
-        10, 50, 150, 30, hWnd, (HMENU)IDC_CLIENT_SCAN_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_SCAN_BTN, NULL, NULL);
     g_hClientServerList = CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", "", WS_CHILD | LBS_NOTIFY | WS_VSCROLL | LBS_HASSTRINGS,
-        10, 90, 460, 100, hWnd, (HMENU)IDC_CLIENT_SERVER_LIST, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_SERVER_LIST, NULL, NULL);
     g_hClientConnectBtn = CreateWindow("BUTTON", "Connect", WS_TABSTOP | WS_CHILD,
-        170, 50, 100, 30, hWnd, (HMENU)IDC_CLIENT_CONNECT_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_CONNECT_BTN, NULL, NULL);
     g_hClientDisconnectBtn = CreateWindow("BUTTON", "Disconnect", WS_TABSTOP | WS_CHILD,
-        280, 50, 100, 30, hWnd, (HMENU)IDC_CLIENT_DISCONNECT_BTN, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_DISCONNECT_BTN, NULL, NULL);
     g_hClientLog = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-        10, 200, 460, 240, hWnd, (HMENU)IDC_CLIENT_LOG, NULL, NULL);
+        0, 0, 0, 0, hWnd, (HMENU)IDC_CLIENT_LOG, NULL, NULL);
     SendMessage(g_hClientScanBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hClientServerList, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hClientConnectBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -382,28 +394,99 @@ void CreateMainGUIControls(HWND hWnd) {
 }
 
 void ShowStartPage() {
+    g_currentPage = Page::START;
     ShowWindow(g_hStartServerBtn, SW_SHOW); ShowWindow(g_hStartClientBtn, SW_SHOW);
     ShowWindow(g_hBackBtn, SW_HIDE);
     ShowWindow(g_hServerStartBtn, SW_HIDE); ShowWindow(g_hServerStopBtn, SW_HIDE); ShowWindow(g_hServerLog, SW_HIDE);
     ShowWindow(g_hChangeHotkeyBtn, SW_HIDE); ShowWindow(g_hHotkeyDisplay, SW_HIDE); ShowWindow(g_hHotkeyLabel, SW_HIDE);
     ShowWindow(g_hClientScanBtn, SW_HIDE); ShowWindow(g_hClientServerList, SW_HIDE); ShowWindow(g_hClientConnectBtn, SW_HIDE); ShowWindow(g_hClientDisconnectBtn, SW_HIDE); ShowWindow(g_hClientLog, SW_HIDE);
+    
+    RECT rc; GetClientRect(g_hwnd, &rc); ResizeControls(rc.right - rc.left, rc.bottom - rc.top);
 }
 
 void ShowServerPage() {
+    g_currentPage = Page::SERVER;
     ShowWindow(g_hStartServerBtn, SW_HIDE); ShowWindow(g_hStartClientBtn, SW_HIDE);
     ShowWindow(g_hBackBtn, SW_SHOW);
     ShowWindow(g_hServerStartBtn, SW_SHOW); ShowWindow(g_hServerStopBtn, SW_SHOW); ShowWindow(g_hServerLog, SW_SHOW);
     ShowWindow(g_hChangeHotkeyBtn, SW_SHOW); ShowWindow(g_hHotkeyDisplay, SW_SHOW); ShowWindow(g_hHotkeyLabel, SW_SHOW);
     ShowWindow(g_hClientScanBtn, SW_HIDE); ShowWindow(g_hClientServerList, SW_HIDE); ShowWindow(g_hClientConnectBtn, SW_HIDE); ShowWindow(g_hClientDisconnectBtn, SW_HIDE); ShowWindow(g_hClientLog, SW_HIDE);
+
+    RECT rc; GetClientRect(g_hwnd, &rc); ResizeControls(rc.right - rc.left, rc.bottom - rc.top);
 }
 
 void ShowClientPage() {
+    g_currentPage = Page::CLIENT;
     ShowWindow(g_hStartServerBtn, SW_HIDE); ShowWindow(g_hStartClientBtn, SW_HIDE);
     ShowWindow(g_hBackBtn, SW_SHOW);
     ShowWindow(g_hServerStartBtn, SW_HIDE); ShowWindow(g_hServerStopBtn, SW_HIDE); ShowWindow(g_hServerLog, SW_HIDE);
     ShowWindow(g_hChangeHotkeyBtn, SW_HIDE); ShowWindow(g_hHotkeyDisplay, SW_HIDE); ShowWindow(g_hHotkeyLabel, SW_HIDE);
     ShowWindow(g_hClientScanBtn, SW_SHOW); ShowWindow(g_hClientServerList, SW_SHOW); ShowWindow(g_hClientConnectBtn, SW_SHOW); ShowWindow(g_hClientDisconnectBtn, SW_SHOW); ShowWindow(g_hClientLog, SW_SHOW);
+
+    RECT rc; GetClientRect(g_hwnd, &rc); ResizeControls(rc.right - rc.left, rc.bottom - rc.top);
 }
+
+void ResizeControls(int width, int height) {
+    const int MARGIN = 10;
+    const int BTN_HEIGHT = 30;
+    const int BACK_BTN_HEIGHT = 25;
+    const int TOP_ROW_Y = MARGIN;
+    const int SECOND_ROW_Y = TOP_ROW_Y + BACK_BTN_HEIGHT + MARGIN;
+
+    switch (g_currentPage) {
+        case Page::START: {
+            int btnWidth = 200;
+            int btnHeight = 40;
+            int btnX = (width - btnWidth) / 2;
+            int btnY = (height - (btnHeight * 2 + MARGIN)) / 2;
+            MoveWindow(g_hStartServerBtn, btnX, btnY, btnWidth, btnHeight, TRUE);
+            MoveWindow(g_hStartClientBtn, btnX, btnY + btnHeight + MARGIN, btnWidth, btnHeight, TRUE);
+            break;
+        }
+        case Page::SERVER: {
+            MoveWindow(g_hBackBtn, MARGIN, TOP_ROW_Y, 80, BACK_BTN_HEIGHT, TRUE);
+            
+            int topBtnWidth = (width - MARGIN * 3) / 2;
+            if (topBtnWidth < 100) topBtnWidth = 100;
+            MoveWindow(g_hServerStartBtn, MARGIN, SECOND_ROW_Y, topBtnWidth, BTN_HEIGHT, TRUE);
+            MoveWindow(g_hServerStopBtn, MARGIN * 2 + topBtnWidth, SECOND_ROW_Y, topBtnWidth, BTN_HEIGHT, TRUE);
+
+            int hotkeyY = SECOND_ROW_Y + BTN_HEIGHT + MARGIN;
+            int hotkeyLabelWidth = 100;
+            int changeBtnWidth = 80;
+            int displayWidth = width - hotkeyLabelWidth - changeBtnWidth - MARGIN * 4;
+            if (displayWidth < 100) displayWidth = 100;
+            MoveWindow(g_hHotkeyLabel, MARGIN, hotkeyY, hotkeyLabelWidth, 25, TRUE);
+            MoveWindow(g_hHotkeyDisplay, MARGIN * 2 + hotkeyLabelWidth, hotkeyY, displayWidth, 23, TRUE);
+            MoveWindow(g_hChangeHotkeyBtn, MARGIN * 3 + hotkeyLabelWidth + displayWidth, hotkeyY, changeBtnWidth, 23, TRUE);
+
+            int logY = hotkeyY + 25 + MARGIN;
+            int logHeight = height - logY - MARGIN;
+            MoveWindow(g_hServerLog, MARGIN, logY, width - MARGIN * 2, logHeight, TRUE);
+            break;
+        }
+        case Page::CLIENT: {
+             MoveWindow(g_hBackBtn, MARGIN, TOP_ROW_Y, 80, BACK_BTN_HEIGHT, TRUE);
+
+             int scanBtnW = 150;
+             int connectBtnW = 100;
+             int disconnectBtnW = 100;
+             MoveWindow(g_hClientScanBtn, MARGIN, SECOND_ROW_Y, scanBtnW, BTN_HEIGHT, TRUE);
+             MoveWindow(g_hClientConnectBtn, MARGIN * 2 + scanBtnW, SECOND_ROW_Y, connectBtnW, BTN_HEIGHT, TRUE);
+             MoveWindow(g_hClientDisconnectBtn, MARGIN * 3 + scanBtnW + connectBtnW, SECOND_ROW_Y, disconnectBtnW, BTN_HEIGHT, TRUE);
+
+             int listY = SECOND_ROW_Y + BTN_HEIGHT + MARGIN;
+             int listHeight = 100;
+             MoveWindow(g_hClientServerList, MARGIN, listY, width - MARGIN * 2, listHeight, TRUE);
+
+             int logY = listY + listHeight + MARGIN;
+             int logHeight = height - logY - MARGIN;
+             MoveWindow(g_hClientLog, MARGIN, logY, width - MARGIN * 2, logHeight, TRUE);
+            break;
+        }
+    }
+}
+
 
 // =================================================================================
 // KVM Logic (Server, Client, Hooks) - Adapted for GUI
