@@ -602,7 +602,7 @@ void send_data(const std::string& data) {
         if (!log_data.empty() && log_data.back() == '\n') {
             log_data.pop_back();
         }
-        LogServerMessage("Sending -> " + log_data);
+        // LogServerMessage("Sending -> " + log_data);
 
         int bytes_sent = send(g_client_socket, data.c_str(), (int)data.length(), 0);
         if (bytes_sent == SOCKET_ERROR) {
@@ -648,21 +648,33 @@ void simulate_mouse_event(const std::string& event_type, int val1, int val2, int
     SendInput(1, &input, sizeof(INPUT));
 }
 
+// void release_all_client_modifiers() {
+//     LogClientMessage("Failsafe: Releasing all remote modifier keys by 'tapping' them.");
+//     INPUT inputs[16] = {};
+//     int keys[] = { VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN };
+//     for (int i = 0; i < 8; ++i) {
+//         inputs[i*2].type = INPUT_KEYBOARD;
+//         inputs[i*2].ki.wVk = keys[i];
+//         inputs[i*2 + 1] = inputs[i*2];
+//         inputs[i*2 + 1].ki.dwFlags = KEYEVENTF_KEYUP;
+//     }
+//     SendInput(16, inputs, sizeof(INPUT));
+// }
 void release_all_client_modifiers() {
-    LogClientMessage("Failsafe: Releasing all remote modifier keys by 'tapping' them.");
-    INPUT inputs[16] = {};
+    LogClientMessage("Failsafe: Releasing all remote modifier keys.");
+    INPUT inputs[8] = {};
     int keys[] = { VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN };
     for (int i = 0; i < 8; ++i) {
-        inputs[i*2].type = INPUT_KEYBOARD;
-        inputs[i*2].ki.wVk = keys[i];
-        inputs[i*2 + 1] = inputs[i*2];
-        inputs[i*2 + 1].ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs[i].type = INPUT_KEYBOARD;
+        inputs[i].ki.wVk = keys[i];
+        // Only send the KEYEVENTF_KEYUP event.
+        inputs[i].ki.dwFlags = KEYEVENTF_KEYUP;
     }
-    SendInput(16, inputs, sizeof(INPUT));
+    SendInput(8, inputs, sizeof(INPUT));
 }
 
 void process_message(const std::string& message) {
-    LogClientMessage("Received <- " + message);
+    // LogClientMessage("Received <- " + message);
 
     size_t pos = message.find("event:");
     if (pos != std::string::npos) {
