@@ -4,7 +4,7 @@
 // application using the native Windows API (WinAPI).
 //
 // How to compile on Windows with MinGW-w64 (g++):
-// g++ -std=c++17 kvm_gui.cpp -o kvm_gui.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s
+// g++ -std=c++17 kvm_gui.cpp -o kvm_gui.exe -lws2_32 -luser32 -lgdi32 -lcomctl32 -static -s -mwindows
 //
 // Required libraries to link:
 // -lws2_32 : Windows Sockets API for networking.
