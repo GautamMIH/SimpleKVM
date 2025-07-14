@@ -1,5 +1,5 @@
-# Python Software KVM
-A simple, single-file software KVM (Keyboard, Video, Mouse) application written in Python using Tkinter and pynput. This tool allows you to share a single mouse and keyboard between two computers on the same local network.
+#Simple KVM
+A simple, single-file software KVM (Keyboard, Video, Mouse) application . This tool allows you to share a single mouse and keyboard between two computers on the same local network.
 
 ![Image](https://raw.githubusercontent.com/GautamMIH/SimpleKVM/refs/heads/main/images/Main.png)
 
@@ -20,25 +20,15 @@ Robust Suppression: Implements a "re-centering" technique for mouse suppression,
 
 Clean Shutdown: Ensures all background threads and input listeners are properly terminated for a clean exit.
 
-You can install the required library using pip:
-```
-pip install -r requirements.txt
-```
-To compile it into an executable, run the following command:
-
-```
- pyinstaller --onefile --windowed --additional-hooks-dir . unified_kvm.py
-```
-
 
 ## How to Use
 
-Download the unified_kvm.py script onto both computers you wish to use.
+Download the SimpleKVM.exe onto both computers you wish to use.
 
 Make sure both computers are connected to the same local network.
 
 ### On the Server Machine (The one with the keyboard/mouse to be shared)
-Run the script: python unified_kvm.py
+Run the application.
 
 Select "Act as Server".
 
@@ -49,7 +39,7 @@ Click "Start Server". The log will indicate that the server is running and waiti
 ![Image](https://raw.githubusercontent.com/GautamMIH/SimpleKVM/refs/heads/main/images/server.png)
 
 ### On the Client Machine (The one to be controlled)
-Run the script: python unified_kvm.py
+Run the application.
 
 Select "Act as Client".
 
@@ -65,13 +55,12 @@ To switch control from the server to the client, press the designated Toggle Hot
 To return control to the server, press the Toggle Hotkey again.
 
 ## How It Works
-Discovery: The server broadcasts a UDP packet containing a specific message (KVM_SERVER_DISCOVERY_PING_V3) to the local network broadcast address. The client listens on the discovery port for this message and adds the sender's IP address to its list of available servers.
+Discovery: The server broadcasts a UDP packet containing a specific message to the local network broadcast address. The client listens on the discovery port for this message and adds the sender's IP address to its list of available servers.
 
 Communication: Once a connection is established, the server and client communicate over a persistent TCP socket.
 
 ## Input Handling:
 
-The server uses the pynput library to create low-level listeners for the mouse and keyboard.
 
 When remote control is active, every input event (mouse movement, clicks, scrolls, key presses/releases) is captured.
 
@@ -79,5 +68,5 @@ Mouse movement is calculated as a relative delta (dx, dy) and sent to the client
 
 All events are serialized into a JSON format and sent over the TCP socket.
 
-The client receives the JSON data, deserializes it, and uses pynput's controller functions (mouse_ctrl.move, keyboard_ctrl.press, etc.) to simulate the exact same input on the client machine.
+The client receives the JSON data, deserializes it, and simulates the exact same input on the client machine.
 
