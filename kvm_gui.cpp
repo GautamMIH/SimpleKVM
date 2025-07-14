@@ -37,6 +37,7 @@ const std::string DISCOVERY_MESSAGE = "KVM_SERVER_DISCOVERY_PING_CPP";
 #define WM_APP_ADD_SERVER (WM_APP + 4)
 #define WM_APP_CLIENT_CONNECTED (WM_APP + 5)
 #define WM_APP_CLIENT_RESET_UI (WM_APP + 6)
+#define WM_APP_UPDATE_HOTKEY_DISPLAY (WM_APP + 7)
 
 
 // Control IDs
@@ -46,6 +47,9 @@ const std::string DISCOVERY_MESSAGE = "KVM_SERVER_DISCOVERY_PING_CPP";
 #define IDC_SERVER_START_BTN 201
 #define IDC_SERVER_STOP_BTN 202
 #define IDC_SERVER_LOG 203
+#define IDC_CHANGE_HOTKEY_BTN 204
+#define IDC_HOTKEY_DISPLAY 205
+#define IDC_HOTKEY_LABEL 206
 #define IDC_CLIENT_SCAN_BTN 301
 #define IDC_CLIENT_CONNECT_BTN 302
 #define IDC_CLIENT_DISCONNECT_BTN 303
@@ -54,6 +58,7 @@ const std::string DISCOVERY_MESSAGE = "KVM_SERVER_DISCOVERY_PING_CPP";
 
 // --- Global State ---
 std::atomic<bool> g_is_running(true);
+std::atomic<bool> g_is_server_active(false);
 std::atomic<bool> g_is_controlling_remote(false);
 SOCKET g_client_socket = INVALID_SOCKET;
 std::mutex g_socket_mutex;
@@ -72,18 +77,27 @@ std::atomic<SOCKET> g_connect_socket = INVALID_SOCKET;
 HHOOK g_keyboard_hook = NULL;
 HHOOK g_mouse_hook = NULL;
 
+// Hotkey Configuration
+std::atomic<int> g_hotkey_vk('Z');
+std::atomic<bool> g_hotkey_ctrl(true);
+std::atomic<bool> g_hotkey_alt(true);
+std::atomic<bool> g_hotkey_shift(false);
+std::atomic<bool> g_is_waiting_for_hotkey(false);
+
 // GUI Handles
 HWND g_hStartServerBtn, g_hStartClientBtn;
-HWND g_hBackBtn, g_hServerStartBtn, g_hServerStopBtn, g_hServerLog;
+HWND g_hBackBtn, g_hServerStartBtn, g_hServerStopBtn, g_hServerLog, g_hChangeHotkeyBtn, g_hHotkeyDisplay, g_hHotkeyLabel;
 HWND g_hClientScanBtn, g_hClientConnectBtn, g_hClientDisconnectBtn, g_hClientServerList, g_hClientLog;
 
 // --- Function Prototypes ---
 void run_server_logic();
 void run_client_scan_logic();
 void run_client_connect_logic(std::string server_ip);
+void stop_network_threads();
 void stop_kvm_logic();
 void InstallHooks();
 void UninstallHooks();
+std::string GetHotkeyString();
 
 void handle_client_connection(SOCKET client_socket);
 LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam);
@@ -157,6 +171,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     switch (message) {
         case WM_CREATE:
             CreateMainGUIControls(hWnd);
+            SetWindowText(g_hHotkeyDisplay, GetHotkeyString().c_str());
             ShowStartPage();
             break;
 
@@ -165,34 +180,41 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             switch (wmId) {
                 case IDC_START_SERVER_BTN:
                     ShowServerPage();
+                    InstallHooks(); // Install hooks when server page is shown
                     break;
                 case IDC_START_CLIENT_BTN:
                     ShowClientPage();
                     break;
                 case IDC_BACK_BTN:
-                    stop_kvm_logic();
+                    g_is_server_active = false;
+                    stop_kvm_logic(); // This stops network AND uninstalls hooks
                     ShowStartPage();
                     break;
                 case IDC_SERVER_START_BTN:
                     EnableWindow(g_hServerStartBtn, FALSE);
                     EnableWindow(g_hServerStopBtn, TRUE);
-                    stop_kvm_logic(); // Ensure previous instance is stopped
-                    
-                    // FIX: Install hooks from the main GUI thread, which has a message loop.
-                    InstallHooks();
-
+                    g_is_server_active = true;
+                    stop_network_threads(); 
                     g_kvm_thread = std::thread(run_server_logic);
                     break;
                 case IDC_SERVER_STOP_BTN:
-                    stop_kvm_logic();
                     EnableWindow(g_hServerStartBtn, TRUE);
                     EnableWindow(g_hServerStopBtn, FALSE);
+                    g_is_server_active = false;
+                    stop_network_threads();
                     LogServerMessage("Server stopped by user.");
+                    break;
+                case IDC_CHANGE_HOTKEY_BTN:
+                    g_is_waiting_for_hotkey = true;
+                    EnableWindow(g_hChangeHotkeyBtn, FALSE);
+                    EnableWindow(g_hServerStartBtn, FALSE);
+                    EnableWindow(g_hServerStopBtn, FALSE);
+                    SetWindowText(g_hHotkeyDisplay, "Press a key combination...");
                     break;
                 case IDC_CLIENT_SCAN_BTN:
                     SendMessage(g_hClientServerList, LB_RESETCONTENT, 0, 0);
                     g_found_servers.clear();
-                    stop_kvm_logic();
+                    stop_network_threads();
                     g_kvm_thread = std::thread(run_client_scan_logic);
                     break;
                 case IDC_CLIENT_CONNECT_BTN: {
@@ -200,7 +222,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     if (selected_index != LB_ERR) {
                         if (selected_index < g_found_servers.size()) {
                             std::string server_ip = g_found_servers[selected_index];
-                            stop_kvm_logic();
+                            stop_network_threads();
                             g_kvm_thread = std::thread(run_client_connect_logic, server_ip);
                         }
                     } else {
@@ -210,7 +232,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
                 case IDC_CLIENT_DISCONNECT_BTN:
                      LogClientMessage("Disconnecting...");
-                     stop_kvm_logic(); 
+                     stop_network_threads(); 
                      PostMessage(hWnd, WM_APP_CLIENT_RESET_UI, 0, 0);
                      break;
             }
@@ -256,6 +278,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
              EnableWindow(g_hClientDisconnectBtn, FALSE);
              LogClientMessage("Disconnected.");
              break;
+
+        case WM_APP_UPDATE_HOTKEY_DISPLAY: {
+            char* hotkey_str_c = (char*)wParam;
+            SetWindowText(g_hHotkeyDisplay, hotkey_str_c);
+            delete[] hotkey_str_c;
+            
+            EnableWindow(g_hChangeHotkeyBtn, TRUE);
+            if (g_is_server_active) {
+                EnableWindow(g_hServerStartBtn, FALSE);
+                EnableWindow(g_hServerStopBtn, TRUE);
+            } else {
+                EnableWindow(g_hServerStartBtn, TRUE);
+                EnableWindow(g_hServerStopBtn, FALSE);
+            }
+            LogServerMessage("Hotkey has been updated.");
+            break;
+        }
 
         case WM_APP_CLIENT_DISCONNECTED: {
             std::lock_guard<std::mutex> lock(g_socket_mutex);
@@ -303,11 +342,24 @@ void CreateMainGUIControls(HWND hWnd) {
         100, 50, 140, 30, hWnd, (HMENU)IDC_SERVER_START_BTN, NULL, NULL);
     g_hServerStopBtn = CreateWindow("BUTTON", "Stop Server", WS_TABSTOP | WS_CHILD,
         250, 50, 140, 30, hWnd, (HMENU)IDC_SERVER_STOP_BTN, NULL, NULL);
+    
+    g_hHotkeyLabel = CreateWindow("STATIC", "Toggle Hotkey:", WS_CHILD | SS_RIGHT, 
+        10, 95, 100, 25, hWnd, (HMENU)IDC_HOTKEY_LABEL, NULL, NULL);
+    g_hHotkeyDisplay = CreateWindow("STATIC", "", WS_CHILD | SS_LEFT | WS_BORDER,
+        115, 95, 200, 23, hWnd, (HMENU)IDC_HOTKEY_DISPLAY, NULL, NULL);
+    g_hChangeHotkeyBtn = CreateWindow("BUTTON", "Change", WS_TABSTOP | WS_CHILD,
+        325, 95, 80, 23, hWnd, (HMENU)IDC_CHANGE_HOTKEY_BTN, NULL, NULL);
+
     g_hServerLog = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "", WS_CHILD | WS_VSCROLL | ES_MULTILINE | ES_READONLY,
-        10, 100, 460, 340, hWnd, (HMENU)IDC_SERVER_LOG, NULL, NULL);
+        10, 130, 460, 310, hWnd, (HMENU)IDC_SERVER_LOG, NULL, NULL);
+
     SendMessage(g_hServerStartBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hServerStopBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
     SendMessage(g_hServerLog, WM_SETFONT, (WPARAM)hFont, TRUE);
+    SendMessage(g_hHotkeyLabel, WM_SETFONT, (WPARAM)hFont, TRUE);
+    SendMessage(g_hHotkeyDisplay, WM_SETFONT, (WPARAM)hFont, TRUE);
+    SendMessage(g_hChangeHotkeyBtn, WM_SETFONT, (WPARAM)hFont, TRUE);
+
     EnableWindow(g_hServerStopBtn, FALSE);
 
     // Client Page
@@ -333,6 +385,7 @@ void ShowStartPage() {
     ShowWindow(g_hStartServerBtn, SW_SHOW); ShowWindow(g_hStartClientBtn, SW_SHOW);
     ShowWindow(g_hBackBtn, SW_HIDE);
     ShowWindow(g_hServerStartBtn, SW_HIDE); ShowWindow(g_hServerStopBtn, SW_HIDE); ShowWindow(g_hServerLog, SW_HIDE);
+    ShowWindow(g_hChangeHotkeyBtn, SW_HIDE); ShowWindow(g_hHotkeyDisplay, SW_HIDE); ShowWindow(g_hHotkeyLabel, SW_HIDE);
     ShowWindow(g_hClientScanBtn, SW_HIDE); ShowWindow(g_hClientServerList, SW_HIDE); ShowWindow(g_hClientConnectBtn, SW_HIDE); ShowWindow(g_hClientDisconnectBtn, SW_HIDE); ShowWindow(g_hClientLog, SW_HIDE);
 }
 
@@ -340,6 +393,7 @@ void ShowServerPage() {
     ShowWindow(g_hStartServerBtn, SW_HIDE); ShowWindow(g_hStartClientBtn, SW_HIDE);
     ShowWindow(g_hBackBtn, SW_SHOW);
     ShowWindow(g_hServerStartBtn, SW_SHOW); ShowWindow(g_hServerStopBtn, SW_SHOW); ShowWindow(g_hServerLog, SW_SHOW);
+    ShowWindow(g_hChangeHotkeyBtn, SW_SHOW); ShowWindow(g_hHotkeyDisplay, SW_SHOW); ShowWindow(g_hHotkeyLabel, SW_SHOW);
     ShowWindow(g_hClientScanBtn, SW_HIDE); ShowWindow(g_hClientServerList, SW_HIDE); ShowWindow(g_hClientConnectBtn, SW_HIDE); ShowWindow(g_hClientDisconnectBtn, SW_HIDE); ShowWindow(g_hClientLog, SW_HIDE);
 }
 
@@ -347,6 +401,7 @@ void ShowClientPage() {
     ShowWindow(g_hStartServerBtn, SW_HIDE); ShowWindow(g_hStartClientBtn, SW_HIDE);
     ShowWindow(g_hBackBtn, SW_SHOW);
     ShowWindow(g_hServerStartBtn, SW_HIDE); ShowWindow(g_hServerStopBtn, SW_HIDE); ShowWindow(g_hServerLog, SW_HIDE);
+    ShowWindow(g_hChangeHotkeyBtn, SW_HIDE); ShowWindow(g_hHotkeyDisplay, SW_HIDE); ShowWindow(g_hHotkeyLabel, SW_HIDE);
     ShowWindow(g_hClientScanBtn, SW_SHOW); ShowWindow(g_hClientServerList, SW_SHOW); ShowWindow(g_hClientConnectBtn, SW_SHOW); ShowWindow(g_hClientDisconnectBtn, SW_SHOW); ShowWindow(g_hClientLog, SW_SHOW);
 }
 
@@ -354,12 +409,47 @@ void ShowClientPage() {
 // KVM Logic (Server, Client, Hooks) - Adapted for GUI
 // =================================================================================
 
+std::string GetHotkeyString() {
+    std::string hotkey_str;
+    if (g_hotkey_ctrl) hotkey_str += "Ctrl + ";
+    if (g_hotkey_alt) hotkey_str += "Alt + ";
+    if (g_hotkey_shift) hotkey_str += "Shift + ";
+
+    UINT vk = g_hotkey_vk.load();
+    UINT scan_code = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
+    
+    char key_name[50] = {0};
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        sprintf_s(key_name, "F%d", vk - VK_F1 + 1);
+    } else {
+        int result = GetKeyNameText(scan_code << 16, key_name, sizeof(key_name));
+        if (result == 0) {
+            // Fallback for keys GetKeyNameText doesn't handle well
+            switch (vk) {
+                case VK_LEFT: strcpy_s(key_name, "LEFT"); break;
+                case VK_RIGHT: strcpy_s(key_name, "RIGHT"); break;
+                case VK_UP: strcpy_s(key_name, "UP"); break;
+                case VK_DOWN: strcpy_s(key_name, "DOWN"); break;
+                case VK_PRIOR: strcpy_s(key_name, "PAGE UP"); break;
+                case VK_NEXT: strcpy_s(key_name, "PAGE DOWN"); break;
+                case VK_HOME: strcpy_s(key_name, "HOME"); break;
+                case VK_END: strcpy_s(key_name, "END"); break;
+                case VK_INSERT: strcpy_s(key_name, "INSERT"); break;
+                case VK_DELETE: strcpy_s(key_name, "DELETE"); break;
+                default: strcpy_s(key_name, "UNKNOWN"); break;
+            }
+        }
+    }
+    hotkey_str += key_name;
+    return hotkey_str;
+}
+
 void InstallHooks() {
     LogServerMessage("Installing input hooks...");
     g_keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, low_level_keyboard_proc, GetModuleHandle(NULL), 0);
     g_mouse_hook = SetWindowsHookEx(WH_MOUSE_LL, low_level_mouse_proc, GetModuleHandle(NULL), 0);
     if (g_keyboard_hook && g_mouse_hook) {
-        LogServerMessage("Input hooks installed successfully. Hotkey is LCtrl + LAlt + Z.");
+        LogServerMessage("Input hooks installed successfully. Hotkey is " + GetHotkeyString());
     } else {
         LogServerMessage("!!! ERROR: Failed to install input hooks! Try running as administrator.");
         if (!g_keyboard_hook) LogServerMessage("Keyboard hook failed.");
@@ -369,6 +459,10 @@ void InstallHooks() {
 
 void UninstallHooks() {
     LogServerMessage("Uninstalling input hooks...");
+    if (g_is_waiting_for_hotkey) {
+        g_is_waiting_for_hotkey = false;
+        PostMessage(g_hwnd, WM_APP_UPDATE_HOTKEY_DISPLAY, (WPARAM)_strdup(GetHotkeyString().c_str()), 0);
+    }
     if (g_keyboard_hook) UnhookWindowsHookEx(g_keyboard_hook);
     if (g_mouse_hook) UnhookWindowsHookEx(g_mouse_hook);
     g_keyboard_hook = NULL;
@@ -376,12 +470,10 @@ void UninstallHooks() {
     LogServerMessage("Input hooks uninstalled.");
 }
 
-void stop_kvm_logic() {
-    g_is_running = false;
+void stop_network_threads() {
+    g_is_running = false; // Signal threads to stop
 
-    // FIX: Uninstall hooks from the main thread when stopping.
-    UninstallHooks();
-
+    // Close sockets to unblock threads
     SOCKET temp_listen = g_listen_socket.exchange(INVALID_SOCKET);
     if (temp_listen != INVALID_SOCKET) closesocket(temp_listen);
 
@@ -401,11 +493,21 @@ void stop_kvm_logic() {
     }
     if (temp_client != INVALID_SOCKET) closesocket(temp_client);
 
+    // Wait for the thread to finish
     if(g_kvm_thread.joinable()) {
         g_kvm_thread.join();
     }
     
-    g_is_running = true;
+    g_is_running = true; // Reset state for next run
+    
+    if (g_is_controlling_remote) {
+        g_is_controlling_remote = false;
+    }
+}
+
+void stop_kvm_logic() {
+    stop_network_threads();
+    UninstallHooks();
 }
 
 void PostLogMessage(UINT msg_type, const std::string& msg) {
@@ -543,18 +645,50 @@ void handle_client_connection(SOCKET client_socket) {
 LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
         KBDLLHOOKSTRUCT* pkb = (KBDLLHOOKSTRUCT*)lParam;
-        static bool lctrl_down = false;
-        static bool lalt_down = false;
 
-        if (pkb->vkCode == VK_LCONTROL) lctrl_down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
-        if (pkb->vkCode == VK_LMENU) lalt_down = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+        // --- Hotkey Capture Logic ---
+        if (g_is_waiting_for_hotkey && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+            // Don't capture a modifier-only key press (e.g., pressing just "Ctrl")
+            if (pkb->vkCode != VK_LCONTROL && pkb->vkCode != VK_RCONTROL &&
+                pkb->vkCode != VK_LSHIFT   && pkb->vkCode != VK_RSHIFT &&
+                pkb->vkCode != VK_LMENU    && pkb->vkCode != VK_RMENU &&
+                pkb->vkCode != VK_LWIN     && pkb->vkCode != VK_RWIN)
+            {
+                g_hotkey_vk = pkb->vkCode;
+                g_hotkey_ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                g_hotkey_alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+                g_hotkey_shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
 
-        if (lctrl_down && lalt_down && pkb->vkCode == 'Z' && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
-            LogServerMessage("Hotkey detected! Toggling control...");
-            toggle_control();
-            return 1;
+                g_is_waiting_for_hotkey = false;
+
+                // Post message to update GUI from main thread
+                std::string hotkey_str = GetHotkeyString();
+                char* msg_copy = new char[hotkey_str.length() + 1];
+                strcpy_s(msg_copy, hotkey_str.length() + 1, hotkey_str.c_str());
+                PostMessage(g_hwnd, WM_APP_UPDATE_HOTKEY_DISPLAY, (WPARAM)msg_copy, 0);
+
+                return 1; // Consume the keypress to prevent it from passing to other apps
+            }
         }
 
+        // --- Hotkey Detection Logic --- (Only if server is active)
+        if (g_is_server_active && !g_is_waiting_for_hotkey && (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN)) {
+            bool ctrl_is_down = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool alt_is_down = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            bool shift_is_down = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            
+            if (pkb->vkCode == g_hotkey_vk.load() &&
+                ctrl_is_down == g_hotkey_ctrl.load() &&
+                alt_is_down == g_hotkey_alt.load() &&
+                shift_is_down == g_hotkey_shift.load())
+            {
+                LogServerMessage("Hotkey detected! Toggling control...");
+                toggle_control();
+                return 1; // Consume the hotkey
+            }
+        }
+
+        // --- Remote Control Logic ---
         if (g_is_controlling_remote) {
             std::string event_type = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) ? "key_press" : "key_release";
             std::string data = "event:" + event_type + ",vk_code:" + std::to_string(pkb->vkCode) + "\n";
@@ -564,6 +698,7 @@ LRESULT CALLBACK low_level_keyboard_proc(int nCode, WPARAM wParam, LPARAM lParam
     }
     return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 }
+
 
 LRESULT CALLBACK low_level_mouse_proc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION && g_is_controlling_remote) {
@@ -602,6 +737,7 @@ void send_data(const std::string& data) {
         if (!log_data.empty() && log_data.back() == '\n') {
             log_data.pop_back();
         }
+        // Optional: Can be too verbose. Comment out if not needed.
         // LogServerMessage("Sending -> " + log_data);
 
         int bytes_sent = send(g_client_socket, data.c_str(), (int)data.length(), 0);
@@ -648,18 +784,6 @@ void simulate_mouse_event(const std::string& event_type, int val1, int val2, int
     SendInput(1, &input, sizeof(INPUT));
 }
 
-// void release_all_client_modifiers() {
-//     LogClientMessage("Failsafe: Releasing all remote modifier keys by 'tapping' them.");
-//     INPUT inputs[16] = {};
-//     int keys[] = { VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN };
-//     for (int i = 0; i < 8; ++i) {
-//         inputs[i*2].type = INPUT_KEYBOARD;
-//         inputs[i*2].ki.wVk = keys[i];
-//         inputs[i*2 + 1] = inputs[i*2];
-//         inputs[i*2 + 1].ki.dwFlags = KEYEVENTF_KEYUP;
-//     }
-//     SendInput(16, inputs, sizeof(INPUT));
-// }
 void release_all_client_modifiers() {
     LogClientMessage("Failsafe: Releasing all remote modifier keys.");
     INPUT inputs[8] = {};
@@ -667,13 +791,14 @@ void release_all_client_modifiers() {
     for (int i = 0; i < 8; ++i) {
         inputs[i].type = INPUT_KEYBOARD;
         inputs[i].ki.wVk = keys[i];
-        // Only send the KEYEVENTF_KEYUP event.
-        inputs[i].ki.dwFlags = KEYEVENTF_KEYUP;
+        inputs[i].ki.dwFlags = KEYEVENTF_KEYUP; // Only send key-up events
     }
     SendInput(8, inputs, sizeof(INPUT));
 }
 
+
 void process_message(const std::string& message) {
+    // Optional: Can be too verbose. Comment out if not needed.
     // LogClientMessage("Received <- " + message);
 
     size_t pos = message.find("event:");
@@ -697,7 +822,7 @@ void process_message(const std::string& message) {
             start = end_val;
         }
 
-        if (event_type == "control_acquire") LogClientMessage("Server is now in control.");
+        if (event_type == "control_acquire") { LogClientMessage("Server is now in control."); }
         else if (event_type == "control_release") { LogClientMessage("Server has released control."); release_all_client_modifiers(); }
         else if (event_type == "key_press" && !params.empty()) simulate_key_event(std::stoi(params[0].second), true);
         else if (event_type == "key_release" && !params.empty()) simulate_key_event(std::stoi(params[0].second), false);
