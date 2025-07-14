@@ -180,6 +180,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             ShowStartPage();
             break;
 
+        case WM_GETMINMAXINFO: {
+            MINMAXINFO* pMinMaxInfo = (MINMAXINFO*)lParam;
+            pMinMaxInfo->ptMinTrackSize.x = 420;
+            pMinMaxInfo->ptMinTrackSize.y = 350;
+            return 0;
+        }
+
         case WM_SIZE: {
             int width = LOWORD(lParam);
             int height = HIWORD(lParam);
@@ -447,7 +454,6 @@ void ResizeControls(int width, int height) {
             MoveWindow(g_hBackBtn, MARGIN, TOP_ROW_Y, 80, BACK_BTN_HEIGHT, TRUE);
             
             int topBtnWidth = (width - MARGIN * 3) / 2;
-            if (topBtnWidth < 100) topBtnWidth = 100;
             MoveWindow(g_hServerStartBtn, MARGIN, SECOND_ROW_Y, topBtnWidth, BTN_HEIGHT, TRUE);
             MoveWindow(g_hServerStopBtn, MARGIN * 2 + topBtnWidth, SECOND_ROW_Y, topBtnWidth, BTN_HEIGHT, TRUE);
 
@@ -455,7 +461,6 @@ void ResizeControls(int width, int height) {
             int hotkeyLabelWidth = 100;
             int changeBtnWidth = 80;
             int displayWidth = width - hotkeyLabelWidth - changeBtnWidth - MARGIN * 4;
-            if (displayWidth < 100) displayWidth = 100;
             MoveWindow(g_hHotkeyLabel, MARGIN, hotkeyY, hotkeyLabelWidth, 25, TRUE);
             MoveWindow(g_hHotkeyDisplay, MARGIN * 2 + hotkeyLabelWidth, hotkeyY, displayWidth, 23, TRUE);
             MoveWindow(g_hChangeHotkeyBtn, MARGIN * 3 + hotkeyLabelWidth + displayWidth, hotkeyY, changeBtnWidth, 23, TRUE);
