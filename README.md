@@ -1,7 +1,7 @@
 # Python Software KVM
 A simple, single-file software KVM (Keyboard, Video, Mouse) application written in Python using Tkinter and pynput. This tool allows you to share a single mouse and keyboard between two computers on the same local network.
 
-![Image](https://github.com/GautamMIH/SimpleKVM/blob/main/images/Main.png?raw=true)
+![Image](https://raw.githubusercontent.com/GautamMIH/SimpleKVM/refs/heads/main/images/Main.png)
 
 ## Features
 Unified Application: Acts as both a server and a client in a single script.
@@ -46,7 +46,7 @@ Select "Act as Server".
 
 Click "Start Server". The log will indicate that the server is running and waiting for a client.
 
-![Image](https://github.com/GautamMIH/SimpleKVM/blob/main/images/server.png?raw=true)
+![Image](https://raw.githubusercontent.com/GautamMIH/SimpleKVM/refs/heads/main/images/server.png)
 
 ### On the Client Machine (The one to be controlled)
 Run the script: python unified_kvm.py
@@ -57,7 +57,7 @@ Click "Scan for Servers". The server machine should appear in the list with its 
 
 Select the server from the list and click "Connect to Selected".
 
-![Image](https://github.com/GautamMIH/SimpleKVM/blob/main/images/client.png?raw=true)
+![Image](https://raw.githubusercontent.com/GautamMIH/SimpleKVM/refs/heads/main/images/client.png)
 
 ## Toggling Control
 To switch control from the server to the client, press the designated Toggle Hotkey on the server's keyboard. The server's input will become suppressed, and all mouse/keyboard actions will be sent to the client.
