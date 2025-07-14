@@ -1,4 +1,4 @@
-#Simple KVM
+# Simple KVM
 A simple, single-file software KVM (Keyboard, Video, Mouse) application . This tool allows you to share a single mouse and keyboard between two computers on the same local network.
 
 ![Image](https://raw.githubusercontent.com/GautamMIH/SimpleKVM/refs/heads/main/images/Main.png)
